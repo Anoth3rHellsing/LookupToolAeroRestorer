@@ -362,7 +362,13 @@ process {
 end {
     if ($PSCmdlet.ParameterSetName -eq 'Manifest') {
         $manifest = Get-Content -LiteralPath $FromManifest -Raw | ConvertFrom-Json
-        foreach ($entry in $manifest) {
+        # Windows PowerShell 5.1 puede serializar la coleccion envuelta en un
+        # objeto con una propiedad 'value'; se desenvuelve antes de recorrerla.
+        if ($manifest -and -not ($manifest -is [System.Collections.IEnumerable]) -and
+            (@($manifest.PSObject.Properties.Name) -contains 'value')) {
+            $manifest = $manifest.value
+        }
+        foreach ($entry in @($manifest)) {
             if ($entry.Categoria -ne 'CandidatoExtraccion') { continue }
             $src = $entry.RutaBoveda
             if (-not $src) { $src = $entry.RutaOriginal }
