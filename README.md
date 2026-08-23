@@ -36,7 +36,59 @@ es posible — vuelve a poner en primer plano.
 
 ---
 
-## Los tres componentes
+## Uso rápido: el menú guiado
+
+**No hace falta recordar ningún comando.** Descarga el proyecto y haz doble clic
+en **`Iniciar.cmd`** (o ejecuta `.\AeroTool.ps1` desde PowerShell). Aparece un
+menú que te va preguntando y explica cada paso:
+
+```
+   ================================================================
+        F R U T I G E R   A E R O   -  rescate y restauración
+        Windows Vista / 7  ->  Windows 11
+   ================================================================
+   Bóveda: C:\AeroTool\AeroVault  [1.482 archivo(s)]
+
+  MENÚ PRINCIPAL
+  --------------------------------------------------------------------
+    1  Asistente guiado  (empieza por aquí)
+    2  Escanear esta instalación de Windows
+    3  Escanear otro origen          <- disco, carpeta, ISO, install.wim, VHD
+    4  Extraer los recursos incrustados en las DLL
+    5  Restaurar en Windows 11
+    6  Ver el contenido de la bóveda
+    7  Deshacer los cambios
+    8  Comprobar el sistema
+    9  Cambiar la carpeta de la bóveda
+    ?  ¿Qué es esto? / Ayuda
+    0  Salir
+```
+
+La opción **1 (asistente guiado)** hace el recorrido completo en cinco pasos:
+comprobar el sistema → escanear → extraer de las DLL → ver lo rescatado →
+restaurar. En cada paso puedes decir que no, y **nada se cambia sin que lo
+confirmes antes**.
+
+Lo que el menú resuelve por ti:
+
+- **Monta y desmonta las ISOs solo.** Si le das un `.iso` de Vista/7, lo monta,
+  detecta `sources\install.wim` dentro y se ofrece a montarlo también (que es
+  donde están de verdad los recursos), y lo desmonta todo al salir. También
+  acepta `.vhd`/`.vhdx` y archivos `.wim` sueltos.
+- **Explica cada error en castellano** y dice qué hacer: acceso denegado →
+  cómo reabrir como administrador (con un botón para hacerlo); ruta que no
+  existe → comprueba que la unidad sigue conectada; `.esd` en vez de `.wim` →
+  te da el comando exacto para convertirlo.
+- **Vista previa obligatoria** antes de aplicar nada al sistema.
+- **Deshacer** (opción 7): guarda tu aspecto actual antes del primer cambio y
+  lo devuelve tal cual estaba.
+
+---
+
+## Los componentes por separado
+
+Si prefieres la línea de comandos, los cuatro scripts funcionan por su cuenta.
+`AeroTool.ps1` no es más que un menú por encima de estos tres:
 
 ### 1. `AeroScan.ps1` — el escáner/archivador
 
@@ -118,9 +170,15 @@ y reversible. Soporta `-WhatIf` para previsualizar sin tocar nada.
 | `-Theme` | Tema "Frutiger Aero (Recuperado)" que ata todo, con presentación de fondos | `.theme` en tu perfil |
 | `-All` | Todo lo anterior | |
 
-**Para revertir:** Configuración → Personalización → Temas → "Windows (claro)",
-y `Unregister-ScheduledTask FrutigerAero-LogonSound` si activaste el sonido de
-inicio.
+**Para revertir:** `.\AeroRestore.ps1 -Revert` (u opción 7 del menú).
+
+La primera vez que se aplica algo, el script guarda tu configuración previa
+—fondo, cursores, esquema de sonidos y protector— en
+`%LOCALAPPDATA%\FrutigerAero\backup.json`, y ese respaldo original **nunca se
+sobrescribe** en ejecuciones posteriores. Así, revertir siempre devuelve el
+aspecto que tenías antes de conocer esta herramienta, no un estado Aero
+intermedio. Revertir también elimina la tarea del sonido de inicio y el tema
+generado; los archivos rescatados en la bóveda no se tocan.
 
 ---
 
@@ -156,6 +214,9 @@ conserva los `.msstyles` originales para que la preservación sea completa.
 
 ## Flujo recomendado
 
+La forma fácil es doble clic en `Iniciar.cmd` y elegir la opción 1. El
+equivalente por línea de comandos es:
+
 ```powershell
 # 1. Rescata todo lo que quede en tu máquina actual
 .\AeroScan.ps1 -IncludeWinSxS
@@ -168,4 +229,17 @@ conserva los `.msstyles` originales para que la preservación sea completa.
 
 # 4. Devuelve la era Frutiger Aero a tu Windows 11
 .\AeroRestore.ps1 -Vault .\AeroVault -All
+
+# 5. ¿Te arrepientes? Vuelve al aspecto anterior
+.\AeroRestore.ps1 -Revert
 ```
+
+## Archivos del proyecto
+
+| Archivo | Para qué |
+|---|---|
+| `Iniciar.cmd` | Doble clic para abrir el menú (no cambia ninguna configuración de PowerShell) |
+| `AeroTool.ps1` | Menú y asistente guiado: el punto de entrada recomendado |
+| `AeroScan.ps1` | Escáner y archivador |
+| `AeroExtract.ps1` | Extractor de recursos incrustados en DLL |
+| `AeroRestore.ps1` | Restaurador para Windows 11 (y `-Revert`) |

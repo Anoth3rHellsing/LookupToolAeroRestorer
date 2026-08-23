@@ -40,30 +40,207 @@
 .PARAMETER Vault
     Carpeta AeroVault generada por AeroScan.ps1.
 
+.PARAMETER Revert
+    Deshace los cambios aplicados anteriormente, devolviendo el fondo, los
+    cursores, el esquema de sonidos y el protector de pantalla a los valores
+    que tenian ANTES de la primera ejecucion. Esos valores se guardan de forma
+    automatica en %LOCALAPPDATA%\FrutigerAero\backup.json la primera vez que se
+    aplica algo, y ese respaldo original nunca se sobrescribe.
+
 .EXAMPLE
     .\AeroRestore.ps1 -Vault .\AeroVault -All -WhatIf
     Muestra todo lo que haria sin tocar nada.
 
 .EXAMPLE
     .\AeroRestore.ps1 -Vault .\AeroVault -Wallpaper -Sounds -Cursors -Theme
+
+.EXAMPLE
+    .\AeroRestore.ps1 -Revert
+    Devuelve el sistema al aspecto que tenia antes.
 #>
-[CmdletBinding(SupportsShouldProcess = $true)]
+[CmdletBinding(SupportsShouldProcess = $true, DefaultParameterSetName = 'Aplicar')]
 param(
-    [Parameter(Mandatory = $true)]
+    [Parameter(ParameterSetName = 'Aplicar', Mandatory = $true)]
     [string]$Vault,
-    [switch]$Wallpaper,
-    [switch]$Sounds,
-    [switch]$Cursors,
-    [switch]$Screensaver,
-    [switch]$SampleMedia,
-    [switch]$StartupSound,
-    [switch]$Theme,
-    [switch]$All
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Wallpaper,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Sounds,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Cursors,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Screensaver,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$SampleMedia,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$StartupSound,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Theme,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$All,
+
+    [Parameter(ParameterSetName = 'Revertir', Mandatory = $true)]
+    [switch]$Revert
 )
 
 if ($env:OS -ne 'Windows_NT') {
     throw 'AeroRestore.ps1 solo funciona en Windows.'
 }
+
+$stage = Join-Path $env:LOCALAPPDATA 'FrutigerAero'
+$backupPath = Join-Path $stage 'backup.json'
+
+# Eventos de sonido que este script toca (usado al aplicar y al revertir)
+$soundMap = @(
+    @{ App = '.Default'; Event = '.Default';             Wav = 'Windows Ding.wav' },
+    @{ App = '.Default'; Event = 'SystemAsterisk';       Wav = 'Windows Ding.wav' },
+    @{ App = '.Default'; Event = 'SystemExclamation';    Wav = 'Windows Exclamation.wav' },
+    @{ App = '.Default'; Event = 'SystemHand';           Wav = 'Windows Critical Stop.wav' },
+    @{ App = '.Default'; Event = 'SystemNotification';   Wav = 'Windows Notify.wav' },
+    @{ App = '.Default'; Event = 'Notification.Default'; Wav = 'Windows Notify.wav' },
+    @{ App = '.Default'; Event = 'DeviceConnect';        Wav = 'Windows Hardware Insert.wav' },
+    @{ App = '.Default'; Event = 'DeviceDisconnect';     Wav = 'Windows Hardware Remove.wav' },
+    @{ App = '.Default'; Event = 'DeviceFail';           Wav = 'Windows Hardware Fail.wav' },
+    @{ App = '.Default'; Event = 'LowBatteryAlarm';      Wav = 'Windows Battery Low.wav' },
+    @{ App = '.Default'; Event = 'CriticalBatteryAlarm'; Wav = 'Windows Battery Critical.wav' },
+    @{ App = '.Default'; Event = 'PrintComplete';        Wav = 'Windows Print complete.wav' },
+    @{ App = '.Default'; Event = 'WindowsUAC';           Wav = 'Windows User Account Control.wav' },
+    @{ App = '.Default'; Event = 'WindowsLogon';         Wav = 'Windows Logon Sound.wav' },
+    @{ App = '.Default'; Event = 'WindowsLogoff';        Wav = 'Windows Logoff Sound.wav' },
+    @{ App = '.Default'; Event = 'SystemExit';           Wav = 'Windows Shutdown.wav' },
+    @{ App = '.Default'; Event = 'MailBeep';             Wav = 'Windows Notify.wav' },
+    @{ App = '.Default'; Event = 'FaxBeep';              Wav = 'Windows Notify.wav' },
+    @{ App = '.Default'; Event = 'MenuCommand';          Wav = '' },
+    @{ App = 'Explorer'; Event = 'Navigating';           Wav = 'Windows Navigation Start.wav' },
+    @{ App = 'Explorer'; Event = 'EmptyRecycleBin';      Wav = 'Windows Recycle.wav' },
+    @{ App = 'Explorer'; Event = 'BlockedPopup';         Wav = 'Windows Pop-up Blocked.wav' }
+)
+
+$cursorRegNames = @('Arrow','Help','AppStarting','Wait','NWPen','No','SizeNS','SizeWE',
+                    'SizeNWSE','SizeNESW','SizeAll','UpArrow','Hand','Crosshair','IBeam')
+
+Add-Type -Namespace AeroTools -Name Native -MemberDefinition @'
+[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+public static extern bool SystemParametersInfoW(uint uiAction, uint uiParam, string pvParam, uint fWinIni);
+'@
+
+$SPI_SETDESKWALLPAPER = 0x0014
+$SPI_SETCURSORS       = 0x0057
+$SPIF_UPDATE_SEND     = 0x0003
+
+function Get-RegValue {
+    param([string]$Key, [string]$Name)
+    try {
+        $item = Get-ItemProperty -Path $Key -Name $Name -ErrorAction Stop
+        return [string]$item.$Name
+    } catch { return $null }
+}
+
+function Save-OriginalState {
+    # Guarda el estado previo UNA sola vez, para que revertir siempre devuelva
+    # el aspecto original y no un estado Aero intermedio.
+    if (Test-Path -LiteralPath $backupPath) { return }
+    if (-not (Test-Path -LiteralPath $stage)) {
+        New-Item -ItemType Directory -Path $stage -Force | Out-Null
+    }
+    $desktop = @{}
+    foreach ($n in @('Wallpaper','WallpaperStyle','TileWallpaper','SCRNSAVE.EXE',
+                     'ScreenSaveActive','ScreenSaveTimeOut')) {
+        $desktop[$n] = Get-RegValue -Key 'HKCU:\Control Panel\Desktop' -Name $n
+    }
+    $cur = @{}
+    foreach ($n in $cursorRegNames) {
+        $cur[$n] = Get-RegValue -Key 'HKCU:\Control Panel\Cursors' -Name $n
+    }
+    $cur['(default)'] = Get-RegValue -Key 'HKCU:\Control Panel\Cursors' -Name '(default)'
+
+    $snd = @{}
+    foreach ($m in $soundMap) {
+        $k = "HKCU:\AppEvents\Schemes\Apps\$($m.App)\$($m.Event)\.Current"
+        $snd["$($m.App)|$($m.Event)"] = Get-RegValue -Key $k -Name '(default)'
+    }
+
+    $backup = [ordered]@{
+        Fecha       = (Get-Date).ToString('o')
+        Desktop     = $desktop
+        Cursors     = $cur
+        SoundScheme = (Get-RegValue -Key 'HKCU:\AppEvents\Schemes' -Name '(default)')
+        Sounds      = $snd
+    }
+    $backup | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $backupPath -Encoding UTF8
+    Write-Host "Estado original guardado en $backupPath" -ForegroundColor DarkGray
+}
+
+# ---------------------------------------------------------------------------
+# Modo revertir
+# ---------------------------------------------------------------------------
+if ($Revert) {
+    Write-Host ''
+    Write-Host '=== AeroRestore: deshaciendo los cambios ===' -ForegroundColor Cyan
+    if (-not (Test-Path -LiteralPath $backupPath)) {
+        Write-Warning "No hay respaldo en ${backupPath}: no se aplico nunca nada desde esta cuenta, o se borro."
+        Write-Host 'Puedes volver al aspecto original manualmente en Configuracion > Personalizacion > Temas > "Windows (claro)".'
+        return
+    }
+    $b = Get-Content -LiteralPath $backupPath -Raw | ConvertFrom-Json
+    $deshecho = New-Object System.Collections.Generic.List[string]
+
+    if ($PSCmdlet.ShouldProcess('HKCU:\Control Panel\Desktop', 'Restaurar fondo y protector originales')) {
+        foreach ($p in $b.Desktop.PSObject.Properties) {
+            if ($null -eq $p.Value) { continue }
+            Set-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name $p.Name -Value $p.Value
+        }
+        if ($b.Desktop.Wallpaper) {
+            [AeroTools.Native]::SystemParametersInfoW($SPI_SETDESKWALLPAPER, 0, $b.Desktop.Wallpaper, $SPIF_UPDATE_SEND) | Out-Null
+        }
+        $deshecho.Add('Fondo de escritorio y protector de pantalla originales')
+    }
+
+    if ($PSCmdlet.ShouldProcess('HKCU:\Control Panel\Cursors', 'Restaurar cursores originales')) {
+        foreach ($p in $b.Cursors.PSObject.Properties) {
+            if ($null -eq $p.Value) { continue }
+            Set-ItemProperty -Path 'HKCU:\Control Panel\Cursors' -Name $p.Name -Value $p.Value -Type ExpandString
+        }
+        [AeroTools.Native]::SystemParametersInfoW($SPI_SETCURSORS, 0, $null, $SPIF_UPDATE_SEND) | Out-Null
+        $deshecho.Add('Esquema de cursores original')
+    }
+
+    if ($PSCmdlet.ShouldProcess('HKCU:\AppEvents', 'Restaurar esquema de sonidos original')) {
+        foreach ($p in $b.Sounds.PSObject.Properties) {
+            if ($null -eq $p.Value) { continue }
+            $parts = $p.Name -split '\|', 2
+            $k = "HKCU:\AppEvents\Schemes\Apps\$($parts[0])\$($parts[1])\.Current"
+            if (Test-Path $k) { Set-ItemProperty -Path $k -Name '(default)' -Value $p.Value }
+        }
+        $esquema = $b.SoundScheme
+        if (-not $esquema) { $esquema = '.Default' }
+        Set-ItemProperty -Path 'HKCU:\AppEvents\Schemes' -Name '(default)' -Value $esquema
+        $nombresKey = 'HKCU:\AppEvents\Schemes\Names\FrutigerAero'
+        if (Test-Path $nombresKey) { Remove-Item -Path $nombresKey -Recurse -Force }
+        $deshecho.Add("Esquema de sonidos devuelto a '$esquema'")
+    }
+
+    $tarea = Get-ScheduledTask -TaskName 'FrutigerAero-LogonSound' -ErrorAction SilentlyContinue
+    if ($tarea -and $PSCmdlet.ShouldProcess('FrutigerAero-LogonSound', 'Eliminar tarea programada')) {
+        try {
+            Unregister-ScheduledTask -TaskName 'FrutigerAero-LogonSound' -Confirm:$false
+            $deshecho.Add('Tarea del sonido de inicio de sesion eliminada')
+        } catch {
+            Write-Warning "No se pudo eliminar la tarea programada: $($_.Exception.Message)"
+        }
+    }
+
+    $themePath = Join-Path $env:LOCALAPPDATA 'Microsoft\Windows\Themes\FrutigerAero.theme'
+    if ((Test-Path -LiteralPath $themePath) -and
+        $PSCmdlet.ShouldProcess($themePath, 'Eliminar tema Frutiger Aero')) {
+        Remove-Item -LiteralPath $themePath -Force -ErrorAction SilentlyContinue
+        $deshecho.Add('Tema "Frutiger Aero (Recuperado)" eliminado')
+    }
+
+    Write-Host ''
+    Write-Host '=== Cambios deshechos ===' -ForegroundColor Cyan
+    foreach ($d in $deshecho) { Write-Host "  [OK] $d" -ForegroundColor Green }
+    Write-Host ''
+    Write-Host "Los archivos rescatados siguen intactos en $stage (borralos a mano si no los quieres)." -ForegroundColor DarkGray
+    Write-Host 'Cierra sesion y vuelve a entrar para que todo se refresque por completo.' -ForegroundColor DarkGray
+    return
+}
+
+# ---------------------------------------------------------------------------
+# Modo aplicar
+# ---------------------------------------------------------------------------
 if (-not (Test-Path -LiteralPath $Vault)) {
     throw "No existe la boveda: $Vault"
 }
@@ -80,16 +257,8 @@ if (-not ($Wallpaper -or $Sounds -or $Cursors -or $Screensaver -or $SampleMedia 
 # Preparacion
 # ---------------------------------------------------------------------------
 
-Add-Type -Namespace AeroTools -Name Native -MemberDefinition @'
-[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
-public static extern bool SystemParametersInfoW(uint uiAction, uint uiParam, string pvParam, uint fWinIni);
-'@
-
-$SPI_SETDESKWALLPAPER = 0x0014
-$SPI_SETCURSORS       = 0x0057
-$SPIF_UPDATE_SEND     = 0x0003
-
-$stage = Join-Path $env:LOCALAPPDATA 'FrutigerAero'
+# Antes de tocar nada, conservar el aspecto actual para poder revertir despues.
+if (-not $WhatIfPreference) { Save-OriginalState }
 
 # Indice de la boveda por nombre de archivo (prefiere Win7 sobre Vista sobre Superviviente)
 $eraRank = @{ 'Win7' = 0; 'Vista' = 1; 'Superviviente' = 2 }
@@ -176,31 +345,8 @@ if ($Wallpaper -or $Theme) {
 # Sonidos
 # ---------------------------------------------------------------------------
 
-# Mapa evento -> wav del esquema por defecto de Windows 7
-$soundMap = @(
-    @{ App = '.Default'; Event = '.Default';             Wav = 'Windows Ding.wav' },
-    @{ App = '.Default'; Event = 'SystemAsterisk';       Wav = 'Windows Ding.wav' },
-    @{ App = '.Default'; Event = 'SystemExclamation';    Wav = 'Windows Exclamation.wav' },
-    @{ App = '.Default'; Event = 'SystemHand';           Wav = 'Windows Critical Stop.wav' },
-    @{ App = '.Default'; Event = 'SystemNotification';   Wav = 'Windows Notify.wav' },
-    @{ App = '.Default'; Event = 'Notification.Default'; Wav = 'Windows Notify.wav' },
-    @{ App = '.Default'; Event = 'DeviceConnect';        Wav = 'Windows Hardware Insert.wav' },
-    @{ App = '.Default'; Event = 'DeviceDisconnect';     Wav = 'Windows Hardware Remove.wav' },
-    @{ App = '.Default'; Event = 'DeviceFail';           Wav = 'Windows Hardware Fail.wav' },
-    @{ App = '.Default'; Event = 'LowBatteryAlarm';      Wav = 'Windows Battery Low.wav' },
-    @{ App = '.Default'; Event = 'CriticalBatteryAlarm'; Wav = 'Windows Battery Critical.wav' },
-    @{ App = '.Default'; Event = 'PrintComplete';        Wav = 'Windows Print complete.wav' },
-    @{ App = '.Default'; Event = 'WindowsUAC';           Wav = 'Windows User Account Control.wav' },
-    @{ App = '.Default'; Event = 'WindowsLogon';         Wav = 'Windows Logon Sound.wav' },
-    @{ App = '.Default'; Event = 'WindowsLogoff';        Wav = 'Windows Logoff Sound.wav' },
-    @{ App = '.Default'; Event = 'SystemExit';           Wav = 'Windows Shutdown.wav' },
-    @{ App = '.Default'; Event = 'MailBeep';             Wav = 'Windows Notify.wav' },
-    @{ App = '.Default'; Event = 'FaxBeep';              Wav = 'Windows Notify.wav' },
-    @{ App = '.Default'; Event = 'MenuCommand';          Wav = '' },
-    @{ App = 'Explorer'; Event = 'Navigating';           Wav = 'Windows Navigation Start.wav' },
-    @{ App = 'Explorer'; Event = 'EmptyRecycleBin';      Wav = 'Windows Recycle.wav' },
-    @{ App = 'Explorer'; Event = 'BlockedPopup';         Wav = 'Windows Pop-up Blocked.wav' }
-)
+# $soundMap (evento -> wav del esquema por defecto de Windows 7) se define arriba,
+# porque el modo -Revert tambien lo necesita.
 
 if ($Sounds) {
     $schemeId = 'FrutigerAero'
