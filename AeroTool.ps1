@@ -217,6 +217,9 @@ function Get-Consejo {
         }
         return 'Windows ha denegado el acceso aunque eres administrador: el archivo puede estar en uso o protegido por el sistema. Se puede omitir sin problema.'
     }
+    if ($msg -match 'manifiesto esta vacio|manifiesto está vacío') {
+        return 'El escaneo anterior no llegó a escribir nada. Vuelve a escanear (opción 2 o 3) para regenerar el manifiesto.'
+    }
     if ($tipo -match 'FileNotFound|DirectoryNotFound|ItemNotFound') {
         return 'La ruta ha dejado de existir. Si es una unidad extraíble o una ISO, comprueba que sigue conectada o montada.'
     }
@@ -251,6 +254,26 @@ function Invoke-Paso {
         Write-Host "        Qué hacer: $c" -ForegroundColor Yellow
         return $false
     }
+}
+
+function Get-Manifiesto {
+    <#  Lee un manifest.json y devuelve SIEMPRE un array de entradas.
+        Windows PowerShell 5.1 serializa algunas colecciones envueltas en un
+        objeto con una propiedad 'value', asi que se desenvuelve antes de usarlas. #>
+    param([string]$Ruta)
+    $crudo = Get-Content -LiteralPath $Ruta -Raw
+    if (-not $crudo -or $crudo.Trim().Length -eq 0) {
+        throw "El manifiesto esta vacio: $Ruta"
+    }
+    $datos = $crudo | ConvertFrom-Json
+    if ($null -eq $datos) { return @() }
+    if (-not ($datos -is [System.Collections.IEnumerable]) -or ($datos -is [string])) {
+        $nombres = @($datos.PSObject.Properties.Name)
+        foreach ($envoltorio in @('value', 'Value')) {
+            if ($nombres -contains $envoltorio) { return @($datos.$envoltorio) }
+        }
+    }
+    return @($datos)
 }
 
 function Test-Scripts {
@@ -658,18 +681,54 @@ function Do-VerBoveda {
         Pausar; return
     }
     $ok = Invoke-Paso -Descripcion 'La lectura del manifiesto' -Accion {
-        $m = @(Get-Content -LiteralPath $manifiesto -Raw | ConvertFrom-Json)
+        $m = Get-Manifiesto -Ruta $manifiesto
+        if ($m.Count -eq 0) {
+            Write-Host ''
+            Write-Aviso 'El manifiesto no contiene ninguna entrada.'
+            Write-Info  'Vuelve a escanear (opción 2 o 3): puede que el anterior no encontrara nada.'
+            return
+        }
+        $propiedades = @($m[0].PSObject.Properties.Name)
+        if ($propiedades -notcontains 'Era' -or $propiedades -notcontains 'Categoria') {
+            Write-Host ''
+            Write-Aviso 'El manifiesto no tiene el formato esperado: le faltan Era o Categoria.'
+            Write-Info  "Propiedades encontradas: $($propiedades -join ', ')"
+            Write-Info  'Seguramente lo generó otra versión de la herramienta. Vuelve a escanear para regenerarlo.'
+            return
+        }
+
+        # Se agrupa a mano en lugar de con Group-Object / Measure-Object: en Windows
+        # PowerShell 5.1 esos cmdlets abortan con 'el valor del argumento "Property"
+        # no es válido' si alguna entrada no trae la propiedad pedida.
+        $grupos = @{}
+        $totalBytes = [long]0
+        foreach ($e in $m) {
+            $era = [string]$e.Era
+            if (-not $era) { $era = '(sin era)' }
+            $cat = [string]$e.Categoria
+            if (-not $cat) { $cat = '(sin categoría)' }
+            $bytes = [long]0
+            if ($null -ne $e.TamanoBytes) {
+                [void][long]::TryParse([string]$e.TamanoBytes, [ref]$bytes)
+            }
+            $clave = $era + '|' + $cat
+            if (-not $grupos.ContainsKey($clave)) {
+                $grupos[$clave] = [pscustomobject]@{ Era = $era; Categoria = $cat; Archivos = 0; Bytes = [long]0 }
+            }
+            $grupos[$clave].Archivos++
+            $grupos[$clave].Bytes += $bytes
+            $totalBytes += $bytes
+        }
+
         Write-Host ''
         Write-Host '     Era            Categoría              Archivos     Tamaño' -ForegroundColor White
         Write-Host '     ------------------------------------------------------------' -ForegroundColor DarkGray
-        $m | Group-Object Era, Categoria | Sort-Object Name | ForEach-Object {
-            $partes = $_.Name -split ',\s*'
-            $mb = [math]::Round((($_.Group | Measure-Object TamanoBytes -Sum).Sum) / 1MB, 1)
-            Write-Host ('     {0,-14} {1,-22} {2,8}   {3,7} MB' -f $partes[0], $partes[1], $_.Count, $mb) -ForegroundColor Gray
+        foreach ($g in ($grupos.Values | Sort-Object Era, Categoria)) {
+            $mb = [math]::Round($g.Bytes / 1MB, 1)
+            Write-Host ('     {0,-14} {1,-22} {2,8}   {3,7} MB' -f $g.Era, $g.Categoria, $g.Archivos, $mb) -ForegroundColor Gray
         }
-        $totalMB = [math]::Round((($m | Measure-Object TamanoBytes -Sum).Sum) / 1MB, 1)
         Write-Host '     ------------------------------------------------------------' -ForegroundColor DarkGray
-        Write-Host ('     {0,-37} {1,8}   {2,7} MB' -f 'TOTAL', $m.Count, $totalMB) -ForegroundColor Green
+        Write-Host ('     {0,-37} {1,8}   {2,7} MB' -f 'TOTAL', $m.Count, [math]::Round($totalBytes / 1MB, 1)) -ForegroundColor Green
 
         $conHash = @($m | Where-Object { $_.SHA256 }).Count
         Write-Host ''

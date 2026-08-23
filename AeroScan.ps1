@@ -392,10 +392,21 @@ $script:Manifest | Export-Csv -LiteralPath $csvPath -NoTypeInformation -Encoding
 
 Write-Host ''
 Write-Host '=== Resumen ===' -ForegroundColor Cyan
-$script:Manifest | Group-Object Era, Categoria | Sort-Object Name | ForEach-Object {
-    Write-Host ("  {0,-45} {1,6} archivo(s)" -f $_.Name, $_.Count)
+# Se agrupa a mano en lugar de con Group-Object / Measure-Object: en Windows
+# PowerShell 5.1 esos cmdlets abortan con 'el valor del argumento "Property" no
+# es valido' cuando la coleccion llega vacia o le falta la propiedad pedida.
+$resumen = @{}
+$totalBytes = [long]0
+foreach ($e in $script:Manifest) {
+    $clave = "{0}, {1}" -f $e.Era, $e.Categoria
+    if (-not $resumen.ContainsKey($clave)) { $resumen[$clave] = 0 }
+    $resumen[$clave]++
+    $totalBytes += [long]$e.TamanoBytes
 }
-$totalMB = [math]::Round((($script:Manifest | Measure-Object TamanoBytes -Sum).Sum) / 1MB, 1)
+foreach ($clave in ($resumen.Keys | Sort-Object)) {
+    Write-Host ("  {0,-45} {1,6} archivo(s)" -f $clave, $resumen[$clave])
+}
+$totalMB = [math]::Round($totalBytes / 1MB, 1)
 Write-Host ''
 Write-Host ("Total: {0} hallazgos ({1} MB). Manifiesto: {2}" -f $script:Manifest.Count, $totalMB, $jsonPath) -ForegroundColor Green
 $candidatos = @($script:Manifest | Where-Object { $_.Categoria -eq 'CandidatoExtraccion' })
