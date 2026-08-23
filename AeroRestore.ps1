@@ -28,6 +28,21 @@
       -Theme          Genera y aplica un archivo .theme "Frutiger Aero
                       (Recuperado)" que ata todo lo anterior, con presentacion
                       de fondos si hay varios.
+      -Icons          Cambia los iconos del escritorio (Equipo, Papelera, Red,
+                      carpeta del usuario, Panel de control) y el de la unidad
+                      del sistema por los de Vista/7. Necesita haber escaneado
+                      una ISO o disco de Vista/7 y extraido sus recursos: se
+                      lee que icono usa hoy Windows 11 y se sustituye por el
+                      MISMO ID de recurso del binario antiguo. Si no hay
+                      binarios de esa epoca, avisa y no toca nada.
+      -Glass          Activa la transparencia y pone el color de acento en el
+                      azul cielo por defecto de Windows 7, en barra de tareas
+                      y Menu Inicio. Es lo mas cerca del cristal Aero que se
+                      puede llegar sin parchear el sistema.
+      -Taskbar        Barra de tareas al estilo Windows 7: alineada a la
+                      izquierda, botones sin combinar y con etiquetas, iconos
+                      pequenos, sin Vista de tareas ni widgets, y todos los
+                      iconos del area de notificacion visibles.
       -All            Todo lo anterior.
 
     Lo que NO hace (y por que): el estilo visual Aero Glass real (msstyles con
@@ -39,6 +54,14 @@
 
 .PARAMETER Vault
     Carpeta AeroVault generada por AeroScan.ps1.
+
+.PARAMETER IconSource
+    Carpeta con los recursos extraidos por AeroExtract.ps1. Por defecto
+    .\AeroExtracted junto al script.
+
+.PARAMETER RestartExplorer
+    Reinicia el Explorador al terminar, para que los iconos y la barra de
+    tareas se vean sin cerrar sesion.
 
 .PARAMETER Revert
     Deshace los cambios aplicados anteriormente, devolviendo el fondo, los
@@ -69,7 +92,12 @@ param(
     [Parameter(ParameterSetName = 'Aplicar')] [switch]$SampleMedia,
     [Parameter(ParameterSetName = 'Aplicar')] [switch]$StartupSound,
     [Parameter(ParameterSetName = 'Aplicar')] [switch]$Theme,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Icons,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Glass,
+    [Parameter(ParameterSetName = 'Aplicar')] [switch]$Taskbar,
     [Parameter(ParameterSetName = 'Aplicar')] [switch]$All,
+    [Parameter(ParameterSetName = 'Aplicar')] [string]$IconSource,
+    [switch]$RestartExplorer,
 
     [Parameter(ParameterSetName = 'Revertir', Mandatory = $true)]
     [switch]$Revert
@@ -81,6 +109,9 @@ if ($env:OS -ne 'Windows_NT') {
 
 $stage = Join-Path $env:LOCALAPPDATA 'FrutigerAero'
 $backupPath = Join-Path $stage 'backup.json'
+
+# Se pone a true si algun cambio necesita reiniciar el Explorador para verse.
+$script:NecesitaExplorador = $false
 
 # Eventos de sonido que este script toca (usado al aplicar y al revertir)
 $soundMap = @(
@@ -120,6 +151,67 @@ $SPI_SETDESKWALLPAPER = 0x0014
 $SPI_SETCURSORS       = 0x0057
 $SPIF_UPDATE_SEND     = 0x0003
 
+# Iconos del escritorio que Windows permite personalizar por usuario
+$IconosEscritorio = @(
+    @{ Clsid = '{20D04FE0-3AEA-1069-A2D8-08002B30309D}'; Nombre = 'Equipo' },
+    @{ Clsid = '{645FF040-5081-101B-9F08-00AA002F954E}'; Nombre = 'Papelera de reciclaje' },
+    @{ Clsid = '{59031a47-3f72-44a7-89c5-5595fe6b30ee}'; Nombre = 'Carpeta del usuario' },
+    @{ Clsid = '{F02C1A0D-BE21-4350-88B0-7367FC96EF3C}'; Nombre = 'Red' },
+    @{ Clsid = '{5399E694-6CE5-4D6C-8FCE-1D8870FDCBA0}'; Nombre = 'Panel de control' }
+)
+
+$RutaDwm        = 'HKCU:\Software\Microsoft\Windows\DWM'
+$RutaPersonaliza = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+$RutaAvanzado   = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Advanced'
+$RutaExplorador = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer'
+$RutaClsidUsuario = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\CLSID'
+
+function Get-ClavesAspecto {
+    <#  Todas las claves que tocan -Icons, -Glass y -Taskbar. Se usa tanto para
+        respaldarlas como para devolverlas a su sitio al revertir. #>
+    $lista = New-Object System.Collections.Generic.List[object]
+    foreach ($n in @('ColorizationColor','ColorizationAfterglow','ColorizationColorBalance',
+                     'ColorizationAfterglowBalance','ColorizationBlurBalance',
+                     'ColorizationGlassAttribute','AccentColor','EnableWindowColorization')) {
+        $lista.Add(@{ K = $RutaDwm; N = $n })
+    }
+    foreach ($n in @('EnableTransparency','ColorPrevalence')) {
+        $lista.Add(@{ K = $RutaPersonaliza; N = $n })
+    }
+    foreach ($n in @('TaskbarAl','TaskbarGlomLevel','MMTaskbarGlomLevel','TaskbarSi',
+                     'ShowTaskViewButton','TaskbarDa')) {
+        $lista.Add(@{ K = $RutaAvanzado; N = $n })
+    }
+    $lista.Add(@{ K = $RutaExplorador; N = 'EnableAutoTray' })
+    foreach ($ico in $IconosEscritorio) {
+        $clave = Join-Path $RutaClsidUsuario (Join-Path $ico.Clsid 'DefaultIcon')
+        foreach ($n in @('(default)', 'empty', 'full')) {
+            $lista.Add(@{ K = $clave; N = $n })
+        }
+    }
+    $letra = ($env:SystemDrive).TrimEnd(':')
+    $lista.Add(@{ K = "$RutaExplorador\DriveIcons\$letra\DefaultIcon"; N = '(default)' })
+    return $lista
+}
+
+function Set-RegValue {
+    param([string]$Key, [string]$Name, $Value, [string]$Type = 'String')
+    if (-not (Test-Path $Key)) { New-Item -Path $Key -Force | Out-Null }
+    Set-ItemProperty -Path $Key -Name $Name -Value $Value -Type $Type
+}
+
+function Restart-Explorador {
+    <# Windows relanza el Explorador solo al matarlo; es la forma habitual de que
+       tome los iconos y la barra de tareas nuevos sin cerrar sesion. #>
+    try {
+        Stop-Process -Name explorer -Force -ErrorAction Stop
+        Write-Host 'Explorador reiniciado.' -ForegroundColor Green
+    } catch {
+        Write-Warning "No se pudo reiniciar el Explorador: $($_.Exception.Message)"
+        Write-Host 'Cierra sesion y vuelve a entrar para ver los cambios.' -ForegroundColor DarkGray
+    }
+}
+
 function Get-RegValue {
     param([string]$Key, [string]$Name)
     try {
@@ -128,10 +220,34 @@ function Get-RegValue {
     } catch { return $null }
 }
 
+function Save-AspectoState {
+    <#  Captura las claves de -Icons/-Glass/-Taskbar tal y como estan ahora.
+        Se llama tambien sobre respaldos antiguos que aun no tenian esta seccion. #>
+    $mapa = @{}
+    foreach ($c in (Get-ClavesAspecto)) {
+        $mapa["$($c.K)|$($c.N)"] = Get-RegValue -Key $c.K -Name $c.N
+    }
+    return $mapa
+}
+
 function Save-OriginalState {
     # Guarda el estado previo UNA sola vez, para que revertir siempre devuelva
     # el aspecto original y no un estado Aero intermedio.
-    if (Test-Path -LiteralPath $backupPath) { return }
+    if (Test-Path -LiteralPath $backupPath) {
+        # Un respaldo de una version anterior puede no tener la seccion Aspecto:
+        # se le anade ahora, mientras esas claves siguen en su valor original.
+        try {
+            $previo = Get-Content -LiteralPath $backupPath -Raw | ConvertFrom-Json
+            if (-not (@($previo.PSObject.Properties.Name) -contains 'Aspecto')) {
+                $previo | Add-Member -NotePropertyName 'Aspecto' -NotePropertyValue (Save-AspectoState)
+                $previo | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $backupPath -Encoding UTF8
+                Write-Host 'Respaldo ampliado con el aspecto actual (iconos, color y barra).' -ForegroundColor DarkGray
+            }
+        } catch {
+            Write-Warning "No se pudo ampliar el respaldo existente: $($_.Exception.Message)"
+        }
+        return
+    }
     if (-not (Test-Path -LiteralPath $stage)) {
         New-Item -ItemType Directory -Path $stage -Force | Out-Null
     }
@@ -158,6 +274,7 @@ function Save-OriginalState {
         Cursors     = $cur
         SoundScheme = (Get-RegValue -Key 'HKCU:\AppEvents\Schemes' -Name '(default)')
         Sounds      = $snd
+        Aspecto     = (Save-AspectoState)
     }
     $backup | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $backupPath -Encoding UTF8
     Write-Host "Estado original guardado en $backupPath" -ForegroundColor DarkGray
@@ -212,6 +329,29 @@ if ($Revert) {
         $deshecho.Add("Esquema de sonidos devuelto a '$esquema'")
     }
 
+    if ((@($b.PSObject.Properties.Name) -contains 'Aspecto') -and $b.Aspecto -and
+        $PSCmdlet.ShouldProcess('Iconos, color de acento y barra de tareas', 'Restaurar valores originales')) {
+        $nAspecto = 0
+        foreach ($p in $b.Aspecto.PSObject.Properties) {
+            $partes = $p.Name -split '\|', 2
+            if ($partes.Count -ne 2) { continue }
+            $clave = $partes[0]
+            $nombre = $partes[1]
+            if ($null -eq $p.Value) {
+                # No existia antes de tocarlo: se quita lo que anadimos nosotros.
+                if (Test-Path $clave) {
+                    Remove-ItemProperty -Path $clave -Name $nombre -ErrorAction SilentlyContinue
+                }
+            } else {
+                $tipo = 'String'
+                if ($p.Value -is [int] -or $p.Value -is [long]) { $tipo = 'DWord' }
+                try { Set-RegValue -Key $clave -Name $nombre -Value $p.Value -Type $tipo; $nAspecto++ } catch { }
+            }
+        }
+        $deshecho.Add("Iconos, color y barra de tareas devueltos a su estado original ($nAspecto valores)")
+        $script:NecesitaExplorador = $true
+    }
+
     $tarea = Get-ScheduledTask -TaskName 'FrutigerAero-LogonSound' -ErrorAction SilentlyContinue
     if ($tarea -and $PSCmdlet.ShouldProcess('FrutigerAero-LogonSound', 'Eliminar tarea programada')) {
         try {
@@ -232,6 +372,15 @@ if ($Revert) {
     Write-Host ''
     Write-Host '=== Cambios deshechos ===' -ForegroundColor Cyan
     foreach ($d in $deshecho) { Write-Host "  [OK] $d" -ForegroundColor Green }
+    if ($script:NecesitaExplorador) {
+        Write-Host ''
+        if ($RestartExplorer) {
+            if ($PSCmdlet.ShouldProcess('explorer.exe', 'Reiniciar el Explorador')) { Restart-Explorador }
+        } else {
+            Write-Host 'Reinicia el Explorador para ver los iconos y la barra como estaban:' -ForegroundColor DarkYellow
+            Write-Host '  Stop-Process -Name explorer -Force' -ForegroundColor Cyan
+        }
+    }
     Write-Host ''
     Write-Host "Los archivos rescatados siguen intactos en $stage (borralos a mano si no los quieres)." -ForegroundColor DarkGray
     Write-Host 'Cierra sesion y vuelve a entrar para que todo se refresque por completo.' -ForegroundColor DarkGray
@@ -247,11 +396,15 @@ if (-not (Test-Path -LiteralPath $Vault)) {
 $Vault = (Resolve-Path -LiteralPath $Vault).Path
 if ($All) {
     $Wallpaper = $Sounds = $Cursors = $Screensaver = $SampleMedia = $StartupSound = $Theme = $true
+    $Icons = $Glass = $Taskbar = $true
 }
-if (-not ($Wallpaper -or $Sounds -or $Cursors -or $Screensaver -or $SampleMedia -or $StartupSound -or $Theme)) {
-    Write-Host 'Nada que hacer: indica -All o alguno de -Wallpaper -Sounds -Cursors -Screensaver -SampleMedia -StartupSound -Theme'
+if (-not ($Wallpaper -or $Sounds -or $Cursors -or $Screensaver -or $SampleMedia -or
+          $StartupSound -or $Theme -or $Icons -or $Glass -or $Taskbar)) {
+    Write-Host 'Nada que hacer: indica -All o alguno de -Wallpaper -Sounds -Cursors -Screensaver'
+    Write-Host '-SampleMedia -StartupSound -Theme -Icons -Glass -Taskbar'
     return
 }
+if (-not $IconSource) { $IconSource = Join-Path $PSScriptRoot 'AeroExtracted' }
 
 # ---------------------------------------------------------------------------
 # Preparacion
@@ -291,11 +444,13 @@ function Find-Asset {
 function Stage-Asset {
     # Copia un recurso a %LOCALAPPDATA%\FrutigerAero para que el tema no dependa
     # de que la boveda (quiza un disco externo) siga conectada.
-    param([string]$Source, [string]$SubDir)
+    param([string]$Source, [string]$SubDir, [string]$NombreDestino)
     if (-not $Source) { return $null }
     $dir = Join-Path $stage $SubDir
     if (-not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $dest = Join-Path $dir ([System.IO.Path]::GetFileName($Source))
+    $nombre = $NombreDestino
+    if (-not $nombre) { $nombre = [System.IO.Path]::GetFileName($Source) }
+    $dest = Join-Path $dir $nombre
     Copy-Item -LiteralPath $Source -Destination $dest -Force
     return $dest
 }
@@ -579,6 +734,171 @@ if ($Theme) {
 }
 
 # ---------------------------------------------------------------------------
+# Iconos de la era Aero
+# ---------------------------------------------------------------------------
+
+function Split-IconRef {
+    <#  "%SystemRoot%\System32\imageres.dll,-109"  ->  archivo + ID de recurso.
+        Un indice NEGATIVO es un ID de recurso (que es como AeroExtract nombra los
+        .ico). Uno positivo es una posicion ordinal, que no se puede mapear con
+        fiabilidad entre versiones: esos se omiten en vez de poner un icono al azar. #>
+    param([string]$Ref)
+    if (-not $Ref) { return $null }
+    $r = $Ref.Trim()
+    $coma = $r.LastIndexOf(',')
+    if ($coma -le 0) { return $null }
+    $n = 0
+    if (-not [int]::TryParse($r.Substring($coma + 1).Trim(), [ref]$n)) { return $null }
+    if ($n -ge 0) { return $null }
+    # La ruta puede venir entrecomillada: "C:\Windows\System32\imageres.dll",-109
+    $ruta = [Environment]::ExpandEnvironmentVariables($r.Substring(0, $coma).Trim().Trim('"'))
+    # Se parte a mano por los dos separadores en vez de usar Path::GetFileName,
+    # que solo reconoce el separador de la plataforma en la que corre.
+    $trozos = $ruta -split '[\\/]'
+    return [pscustomobject]@{
+        Archivo = $trozos[$trozos.Count - 1]
+        Id      = [math]::Abs($n)
+    }
+}
+
+function Get-BinariosLegado {
+    <#  Devuelve las carpetas de AeroExtract que provienen de un binario de
+        Vista/7 (segun el manifiesto), indexadas por nombre de archivo. #>
+    param([string]$Boveda, [string]$Extraccion)
+    $mapa = @{}
+    $manifiesto = Join-Path $Boveda 'manifest.json'
+    if (-not (Test-Path -LiteralPath $manifiesto)) { return $mapa }
+    if (-not (Test-Path -LiteralPath $Extraccion)) { return $mapa }
+    try {
+        $datos = Get-Content -LiteralPath $manifiesto -Raw | ConvertFrom-Json
+        if ($datos -and -not ($datos -is [System.Collections.IEnumerable]) -and
+            (@($datos.PSObject.Properties.Name) -contains 'value')) { $datos = $datos.value }
+    } catch { return $mapa }
+    foreach ($e in @($datos)) {
+        if ($e.Categoria -ne 'CandidatoExtraccion') { continue }
+        if ($e.Era -notin @('Vista', 'Win7')) { continue }
+        $carpeta = Join-Path $Extraccion $e.Nombre
+        if (Test-Path -LiteralPath $carpeta) { $mapa[$e.Nombre.ToLowerInvariant()] = $carpeta }
+    }
+    return $mapa
+}
+
+if ($Icons) {
+    $legado = Get-BinariosLegado -Boveda $Vault -Extraccion $IconSource
+    if ($legado.Count -eq 0) {
+        Write-Warning 'No hay iconos de Vista/7 disponibles, asi que no se cambia ninguno.'
+        Write-Host '  Para tenerlos hacen falta dos cosas:' -ForegroundColor Yellow
+        Write-Host '   1) Escanear una ISO o un disco de Windows Vista o 7 (los iconos de tu' -ForegroundColor Yellow
+        Write-Host '      Windows 11 son los modernos, sustituirlos por si mismos no hace nada).' -ForegroundColor Yellow
+        Write-Host '   2) Ejecutar la extraccion de recursos sobre esa boveda.' -ForegroundColor Yellow
+        Write-Host "   Carpeta de iconos buscada: $IconSource" -ForegroundColor DarkGray
+    } else {
+        Write-Host "Binarios de Vista/7 disponibles: $(($legado.Keys | Sort-Object) -join ', ')" -ForegroundColor DarkGray
+        $puestos = 0
+        $omitidos = New-Object System.Collections.Generic.List[string]
+
+        foreach ($ico in $IconosEscritorio) {
+            $claveSistema  = "HKLM:\SOFTWARE\Classes\CLSID\$($ico.Clsid)\DefaultIcon"
+            $claveUsuario  = Join-Path $RutaClsidUsuario (Join-Path $ico.Clsid 'DefaultIcon')
+            # La Papelera usa los valores 'empty' y 'full'; el resto, el predeterminado.
+            $valores = @('(default)', 'empty', 'full')
+            $algunoPuesto = $false
+            foreach ($vn in $valores) {
+                $actual = Get-RegValue -Key $claveSistema -Name $vn
+                if (-not $actual) { continue }
+                $ref = Split-IconRef -Ref $actual
+                if (-not $ref) { continue }
+                $carpeta = $legado[$ref.Archivo.ToLowerInvariant()]
+                if (-not $carpeta) { continue }
+                $origen = Join-Path $carpeta ("icono_{0}.ico" -f $ref.Id)
+                if (-not (Test-Path -LiteralPath $origen)) { continue }
+                $nombreUnico = '{0}_{1}.ico' -f [System.IO.Path]::GetFileNameWithoutExtension($ref.Archivo), $ref.Id
+                $destino = Stage-Asset -Source $origen -SubDir 'Icons' -NombreDestino $nombreUnico
+                if ($PSCmdlet.ShouldProcess("$($ico.Nombre) [$vn]", "Icono -> $nombreUnico")) {
+                    Set-RegValue -Key $claveUsuario -Name $vn -Value $destino -Type ExpandString
+                    $algunoPuesto = $true
+                }
+            }
+            if ($algunoPuesto) { $puestos++ } else { $omitidos.Add($ico.Nombre) }
+        }
+
+        # Icono de la unidad del sistema
+        $refUnidad = Split-IconRef -Ref (Get-RegValue -Key 'HKLM:\SOFTWARE\Classes\Drive\DefaultIcon' -Name '(default)')
+        if ($refUnidad) {
+            $carpeta = $legado[$refUnidad.Archivo.ToLowerInvariant()]
+            if ($carpeta) {
+                $origen = Join-Path $carpeta ("icono_{0}.ico" -f $refUnidad.Id)
+                if (Test-Path -LiteralPath $origen) {
+                    $letra = ($env:SystemDrive).TrimEnd(':')
+                    $nombreUnico = '{0}_{1}.ico' -f [System.IO.Path]::GetFileNameWithoutExtension($refUnidad.Archivo), $refUnidad.Id
+                    $destino = Stage-Asset -Source $origen -SubDir 'Icons' -NombreDestino $nombreUnico
+                    if ($PSCmdlet.ShouldProcess("Unidad $env:SystemDrive", 'Icono de la unidad del sistema')) {
+                        Set-RegValue -Key "$RutaExplorador\DriveIcons\$letra\DefaultIcon" -Name '(default)' -Value $destino -Type ExpandString
+                        $puestos++
+                    }
+                }
+            }
+        }
+
+        if ($puestos -gt 0) {
+            $applied.Add("$puestos icono(s) del escritorio y unidades cambiados por los de Vista/7")
+            $script:NecesitaExplorador = $true
+        } else {
+            Write-Warning 'No se pudo emparejar ningun icono: los binarios de Vista/7 no traen los mismos IDs de recurso que usa Windows 11.'
+        }
+        if ($omitidos.Count -gt 0) {
+            Write-Host "  Sin equivalente antiguo: $($omitidos -join ', ')" -ForegroundColor DarkGray
+        }
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Color y transparencia (lo mas cerca del cristal Aero sin parchear nada)
+# ---------------------------------------------------------------------------
+if ($Glass) {
+    # Azul cielo por defecto de Windows 7. ColorizationColor va en ARGB y
+    # AccentColor en ABGR, de ahi que los bytes aparezcan al reves.
+    $colorArgb = 0x6B74B8FC
+    $acentoAbgr = [int]0xFFFCB874
+
+    if ($PSCmdlet.ShouldProcess('Color de acento y transparencia', 'Aplicar el azul de Windows 7')) {
+        Set-RegValue -Key $RutaDwm -Name 'ColorizationColor'            -Value $colorArgb -Type DWord
+        Set-RegValue -Key $RutaDwm -Name 'ColorizationAfterglow'        -Value $colorArgb -Type DWord
+        Set-RegValue -Key $RutaDwm -Name 'ColorizationColorBalance'     -Value 8          -Type DWord
+        Set-RegValue -Key $RutaDwm -Name 'ColorizationAfterglowBalance' -Value 43         -Type DWord
+        Set-RegValue -Key $RutaDwm -Name 'ColorizationBlurBalance'      -Value 49         -Type DWord
+        Set-RegValue -Key $RutaDwm -Name 'ColorizationGlassAttribute'   -Value 1          -Type DWord
+        Set-RegValue -Key $RutaDwm -Name 'AccentColor'                  -Value $acentoAbgr -Type DWord
+        Set-RegValue -Key $RutaDwm -Name 'EnableWindowColorization'     -Value 1          -Type DWord
+        Set-RegValue -Key $RutaPersonaliza -Name 'EnableTransparency'   -Value 1          -Type DWord
+        Set-RegValue -Key $RutaPersonaliza -Name 'ColorPrevalence'      -Value 1          -Type DWord
+        $applied.Add('Transparencia activada y color de acento puesto en el azul cielo de Windows 7')
+        $script:NecesitaExplorador = $true
+        Write-Host '  Nota: ColorizationBlurBalance y GlassAttribute son de la epoca de Vista/7;' -ForegroundColor DarkGray
+        Write-Host '  Windows 11 los ignora. El desenfoque real de los bordes ya no existe.' -ForegroundColor DarkGray
+    }
+}
+
+# ---------------------------------------------------------------------------
+# Barra de tareas al estilo Windows 7
+# ---------------------------------------------------------------------------
+if ($Taskbar) {
+    if ($PSCmdlet.ShouldProcess('Barra de tareas', 'Alinear a la izquierda, sin combinar y con etiquetas')) {
+        Set-RegValue -Key $RutaAvanzado -Name 'TaskbarAl'          -Value 0 -Type DWord  # a la izquierda
+        Set-RegValue -Key $RutaAvanzado -Name 'TaskbarGlomLevel'   -Value 2 -Type DWord  # no combinar nunca
+        Set-RegValue -Key $RutaAvanzado -Name 'MMTaskbarGlomLevel' -Value 2 -Type DWord
+        Set-RegValue -Key $RutaAvanzado -Name 'TaskbarSi'          -Value 0 -Type DWord  # iconos pequenos
+        Set-RegValue -Key $RutaAvanzado -Name 'ShowTaskViewButton' -Value 0 -Type DWord  # sin Vista de tareas
+        Set-RegValue -Key $RutaAvanzado -Name 'TaskbarDa'          -Value 0 -Type DWord  # sin widgets
+        Set-RegValue -Key $RutaExplorador -Name 'EnableAutoTray'   -Value 0 -Type DWord  # mostrar todos los iconos
+        $applied.Add('Barra de tareas a la izquierda, botones sin combinar con etiquetas e iconos pequenos')
+        $script:NecesitaExplorador = $true
+        Write-Host '  Nota: "sin combinar con etiquetas" e "iconos pequenos" dependen de la version' -ForegroundColor DarkGray
+        Write-Host '  de Windows 11; en compilaciones antiguas puede que no tengan efecto.' -ForegroundColor DarkGray
+    }
+}
+
+# ---------------------------------------------------------------------------
 # Resumen
 # ---------------------------------------------------------------------------
 Write-Host ''
@@ -589,5 +909,16 @@ if ($applied.Count -eq 0) {
     foreach ($a in $applied) { Write-Host "  [OK] $a" -ForegroundColor Green }
 }
 Write-Host ''
-Write-Host 'Para revertir: Configuracion > Personalizacion > Temas > "Windows (claro)".' -ForegroundColor DarkGray
+if ($script:NecesitaExplorador) {
+    Write-Host ''
+    if ($RestartExplorer) {
+        if ($PSCmdlet.ShouldProcess('explorer.exe', 'Reiniciar el Explorador')) { Restart-Explorador }
+    } else {
+        Write-Host 'Los iconos y la barra de tareas necesitan reiniciar el Explorador:' -ForegroundColor DarkYellow
+        Write-Host '  Stop-Process -Name explorer -Force' -ForegroundColor Cyan
+        Write-Host '  (o vuelve a ejecutar esto anadiendo -RestartExplorer)' -ForegroundColor DarkGray
+    }
+}
+Write-Host ''
+Write-Host 'Para revertir: .\AeroRestore.ps1 -Revert' -ForegroundColor DarkGray
 Write-Host 'La tarea FrutigerAero-LogonSound se elimina con: Unregister-ScheduledTask FrutigerAero-LogonSound' -ForegroundColor DarkGray
