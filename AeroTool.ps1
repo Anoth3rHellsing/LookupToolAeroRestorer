@@ -572,6 +572,9 @@ function Do-Restaurar {
         @{ Clave = '5'; Sw = 'SampleMedia';  Texto = 'Medios de muestra';                      Nota = 'Koala.jpg, Kalimba.mp3, Wildlife.wmv... a C:\Users\Public' }
         @{ Clave = '6'; Sw = 'StartupSound'; Texto = 'Sonido de inicio de sesión';             Nota = 'El "pearl" de Vista/7. La parte global pide administrador' }
         @{ Clave = '7'; Sw = 'Theme';        Texto = 'Tema "Frutiger Aero (Recuperado)"';      Nota = 'Ata todo lo anterior en un tema de Windows' }
+        @{ Clave = '8'; Sw = 'Icons';        Texto = 'Iconos de Vista/7';                      Nota = 'Equipo, Papelera, Red, tu carpeta y la unidad C: (necesita una ISO/disco de Vista o 7)' }
+        @{ Clave = '9'; Sw = 'Glass';        Texto = 'Transparencia y azul cielo de Windows 7'; Nota = 'Barra y Menú Inicio translúcidos con el acento de Win7' }
+        @{ Clave = '10'; Sw = 'Taskbar';     Texto = 'Barra de tareas al estilo Windows 7';     Nota = 'A la izquierda, sin combinar, con etiquetas e iconos pequeños' }
     )
 
     Write-Paso '¿Qué quieres restablecer como predeterminado?'
@@ -586,6 +589,7 @@ function Do-Restaurar {
     Write-Host '    x  Cancelar' -ForegroundColor Cyan
     Write-Host ''
     Write-Host '  Puedes elegir varias separándolas por comas. Ejemplo: 1,2,3' -ForegroundColor DarkGray
+    Write-Host '  Las opciones 8, 9 y 10 son las que dan el "toque Aero" a la interfaz.' -ForegroundColor DarkGray
 
     $sw = @{}
     while ($true) {
@@ -599,7 +603,7 @@ function Do-Restaurar {
         $claves = $r -split '[,\s]+' | Where-Object { $_ }
         $malas = @($claves | Where-Object { $c = $_; -not ($piezas | Where-Object { $_.Clave -eq $c }) })
         if ($malas.Count -gt 0) {
-            Write-Fallo "No reconozco: $($malas -join ', '). Usa números del 1 al 7, 'T' para todo o 'x' para cancelar."
+            Write-Fallo "No reconozco: $($malas -join ', '). Usa números del 1 al 10, 'T' para todo o 'x' para cancelar."
             continue
         }
         foreach ($c in $claves) {
@@ -607,6 +611,18 @@ function Do-Restaurar {
             $sw[$p.Sw] = $true
         }
         break
+    }
+
+    if ($sw.ContainsKey('Icons') -or $sw.ContainsKey('All')) {
+        $extraccion = Join-Path $script:Raiz 'AeroExtracted'
+        if (-not (Test-Path -LiteralPath $extraccion)) {
+            Write-Host ''
+            Write-Aviso 'Has pedido los iconos, pero todavía no has extraído recursos de ninguna DLL.'
+            Write-Info  'Los iconos antiguos salen de un imageres.dll de Vista o 7, así que hace falta:'
+            Write-Info  '  1) escanear una ISO o disco de Vista/7 (opción 3 del menú), y'
+            Write-Info  '  2) ejecutar la extracción (opción 4).'
+            Write-Info  'El resto de lo que hayas elegido se aplicará igual.'
+        }
     }
 
     if ($sw.ContainsKey('StartupSound') -and -not $script:EsAdmin) {
@@ -645,6 +661,21 @@ function Do-Restaurar {
         Write-Host ''
         Write-Exito '¡Listo! Bienvenido de vuelta a 2007.'
         Write-Info  'Algunos cambios (sonidos, cursores) se ven del todo al cerrar y volver a iniciar sesión.'
+
+        $tocaExplorador = $sw.ContainsKey('All') -or $sw.ContainsKey('Icons') -or
+                          $sw.ContainsKey('Glass') -or $sw.ContainsKey('Taskbar')
+        if ($tocaExplorador) {
+            Write-Host ''
+            Write-Info 'Los iconos y la barra de tareas necesitan reiniciar el Explorador para verse.'
+            Write-Info 'Es instantáneo: se cierra y Windows lo vuelve a abrir solo (se cerrarán las'
+            Write-Info 'ventanas del Explorador que tengas abiertas, nada más).'
+            Write-Host ''
+            if (Confirmar -Pregunta '¿Reinicio el Explorador ahora?' -PorDefecto $true) {
+                Invoke-Paso -Descripcion 'El reinicio del Explorador' -Accion {
+                    Stop-Process -Name explorer -Force -ErrorAction Stop
+                } -Consejo 'Cierra sesión y vuelve a entrar para ver los cambios.' | Out-Null
+            }
+        }
     }
     if (-not $SinPausa) { Pausar }
     return $ok

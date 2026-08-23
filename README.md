@@ -168,6 +168,9 @@ y reversible. Soporta `-WhatIf` para previsualizar sin tocar nada.
 | `-SampleMedia` | Sample Pictures/Music/Videos en C:\Users\Public | Copia de archivos |
 | `-StartupSound` | Reactiva el sonido de inicio y programa el *Windows Logon Sound* de Vista/7 al iniciar sesión | HKLM (admin) + tarea programada de usuario |
 | `-Theme` | Tema "Frutiger Aero (Recuperado)" que ata todo, con presentación de fondos | `.theme` en tu perfil |
+| `-Icons` | Iconos de Equipo, Papelera, Red, tu carpeta, Panel de control y unidad C: | HKCU\...\Explorer\CLSID |
+| `-Glass` | Transparencia + acento azul cielo de Windows 7 en barra y Menú Inicio | HKCU\...\DWM y Personalize |
+| `-Taskbar` | Barra a la izquierda, sin combinar, con etiquetas, iconos pequeños | HKCU\...\Explorer\Advanced |
 | `-All` | Todo lo anterior | |
 
 **Para revertir:** `.\AeroRestore.ps1 -Revert` (u opción 7 del menú).
@@ -179,6 +182,37 @@ sobrescribe** en ejecuciones posteriores. Así, revertir siempre devuelve el
 aspecto que tenías antes de conocer esta herramienta, no un estado Aero
 intermedio. Revertir también elimina la tarea del sonido de inicio y el tema
 generado; los archivos rescatados en la bóveda no se tocan.
+
+---
+
+### El "toque Aero" de la interfaz
+
+Las tres últimas opciones son las que cambian la sensación del escritorio:
+
+**`-Icons`** no usa un pack de iconos inventado: lee **qué icono usa hoy Windows 11**
+para cada elemento (por ejemplo `imageres.dll,-109`) y pone el **mismo ID de recurso**
+sacado del `imageres.dll` de Vista/7. Así el emparejado es correcto por construcción,
+sin tablas de equivalencias adivinadas. Cuando un ID no existe en el binario antiguo,
+ese icono se deja como está en vez de poner uno equivocado, y se te dice cuáles.
+
+Para que funcione hace falta haber escaneado **una ISO o disco de Vista/7** y extraído
+sus recursos: los iconos de tu Windows 11 son los modernos, y sustituirlos por sí
+mismos no haría nada. La herramienta lo comprueba con el manifiesto (solo acepta
+binarios marcados como era Vista o Win7) y, si no los encuentra, avisa y no toca nada.
+
+**`-Glass`** pone la transparencia y el azul cielo por defecto de Windows 7
+(`#74B8FC`) como color de acento en barra de tareas y Menú Inicio. Es lo más cerca
+del cristal que se puede llegar sin parchear nada. Los valores `ColorizationBlurBalance`
+y `ColorizationGlassAttribute` se escriben por fidelidad, pero Windows 11 los ignora:
+el desenfoque real de los bordes ya no existe en el compositor.
+
+**`-Taskbar`** devuelve la barra a la izquierda, con botones sin combinar y etiquetas
+de texto, iconos pequeños, sin Vista de tareas ni widgets, y con todos los iconos del
+área de notificación visibles. Lo de "sin combinar con etiquetas" e "iconos pequeños"
+depende de la compilación de Windows 11: en versiones antiguas puede no tener efecto.
+
+Estos tres cambios necesitan **reiniciar el Explorador** para verse; el menú se ofrece
+a hacerlo por ti al terminar (es instantáneo y solo cierra las ventanas del Explorador).
 
 ---
 
@@ -230,8 +264,11 @@ equivalente por línea de comandos es:
 # 4. Devuelve la era Frutiger Aero a tu Windows 11
 .\AeroRestore.ps1 -Vault .\AeroVault -All
 
-# 5. ¿Te arrepientes? Vuelve al aspecto anterior
-.\AeroRestore.ps1 -Revert
+# 5. El toque Aero de la interfaz (iconos, color y barra de tareas)
+.\AeroRestore.ps1 -Vault .\AeroVault -Icons -Glass -Taskbar -RestartExplorer
+
+# 6. ¿Te arrepientes? Vuelve al aspecto anterior
+.\AeroRestore.ps1 -Revert -RestartExplorer
 ```
 
 ## Archivos del proyecto
