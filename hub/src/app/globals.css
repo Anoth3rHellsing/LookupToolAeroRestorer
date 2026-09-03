@@ -1,0 +1,84 @@
+@import 'tailwindcss';
+
+/*
+ * Contención de pantalla (ARQUITECTURA.md §12.2, fase A).
+ *
+ * `overflow-x: hidden` en la raíz y en el cuerpo. Un solo elemento que
+ * desborde produce el desplazamiento horizontal fantasma que arruina la
+ * experiencia en móvil, y es el defecto más difícil de localizar después.
+ */
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+}
+
+:root {
+  --fondo: #0b1220;
+  --superficie: #121b2e;
+  --borde: #1e2b45;
+  --texto: #e6edf7;
+  --texto-tenue: #8fa3c0;
+  --acento: #38bdf8;
+  --alerta: #fbbf24;
+  --peligro: #f87171;
+  --exito: #4ade80;
+
+  /*
+   * Zonas de seguridad táctil. Se declaran como variables para que todo
+   * elemento anclado a un borde las consuma sin recordar la función:
+   * la barra de gestos y los recortes de cámara no deben cubrir botones.
+   */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+
+  /* Área de contacto mínima (§12.2, fase B). */
+  --toque-min: 44px;
+}
+
+body {
+  background: var(--fondo);
+  color: var(--texto);
+  font-family: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/*
+ * Todo elemento pulsable cumple 44x44 px. Se aplica por clase y se
+ * verifica automáticamente en la suite de Playwright, en lugar de
+ * confiar en que cada componente lo recuerde.
+ */
+.toque {
+  min-width: var(--toque-min);
+  min-height: var(--toque-min);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/*
+ * Contenedor de formulario en unidades de viewport DINÁMICAS.
+ * `100vh` no descuenta la barra del navegador móvil ni el teclado
+ * virtual; `100dvh` sí.
+ */
+.pantalla-formulario {
+  min-height: 100dvh;
+}
+
+/* Desplazamiento horizontal contenido: la tabla se desplaza, la página no. */
+.tabla-desplazable {
+  overflow-x: auto;
+  max-width: 100%;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
